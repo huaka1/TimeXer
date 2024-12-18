@@ -3,7 +3,7 @@ export CUDA_VISIBLE_DEVICES=1
 model_name=TimeXer
 des='Timexer-MS'
 
-python3 -u run.py \
+python3 -u -m debugpy --listen 60793 --wait-for-client run.py \
   --task_name long_term_forecast \
   --is_training 1 \
   --root_path ./dataset/ETT-small/ \

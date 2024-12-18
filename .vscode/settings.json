@@ -1,0 +1,5 @@
+{
+    "editor.tokenColorCustomizations": {
+        "comments": "#5FAD65" // 替换为你喜欢的颜色代码
+    }
+}

@@ -5,7 +5,7 @@ from layers.SelfAttention_Family import FullAttention, AttentionLayer
 from layers.Embed import DataEmbedding_inverted, PositionalEmbedding
 import numpy as np
 
-
+# 预测展平层
 class FlattenHead(nn.Module):
     def __init__(self, n_vars, nf, target_window, head_dropout=0):
         super().__init__()
@@ -33,18 +33,20 @@ class EnEmbedding(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x): # [B, 1, L]
         # do patching
         n_vars = x.shape[1]
-        glb = self.glb_token.repeat((x.shape[0], 1, 1, 1))
+        glb = self.glb_token.repeat((x.shape[0], 1, 1, 1)) # [B, 1, 1, D]
 
-        x = x.unfold(dimension=-1, size=self.patch_len, step=self.patch_len)
-        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
+        # 对这一个变量进行patching
+        x = x.unfold(dimension=-1, size=self.patch_len, step=self.patch_len) # [B, 1, L-P+1, P]
+        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3])) # [B*1, L-P+1, P]
         # Input encoding
-        x = self.value_embedding(x) + self.position_embedding(x)
-        x = torch.reshape(x, (-1, n_vars, x.shape[-2], x.shape[-1]))
-        x = torch.cat([x, glb], dim=2)
-        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
+        x = self.value_embedding(x) + self.position_embedding(x) # [B*1, L-P+1, D]
+        x = torch.reshape(x, (-1, n_vars, x.shape[-2], x.shape[-1])) # [B, 1, L-P+1, D]
+        # 将全局变量添加到patching后的序列中 
+        x = torch.cat([x, glb], dim=2) 
+        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3])) # [B*1, L, D]
         return self.dropout(x), n_vars
 
 
@@ -75,7 +77,7 @@ class EncoderLayer(nn.Module):
         self.self_attention = self_attention
         self.cross_attention = cross_attention
         self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1)
-        self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1)
+        self.conv2 = nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=1)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
@@ -84,6 +86,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, cross, x_mask=None, cross_mask=None, tau=None, delta=None):
         B, L, D = cross.shape
+        # 第一个自注意力层
         x = x + self.dropout(self.self_attention(
             x, x, x,
             attn_mask=x_mask,
@@ -91,24 +94,27 @@ class EncoderLayer(nn.Module):
         )[0])
         x = self.norm1(x)
 
-        x_glb_ori = x[:, -1, :].unsqueeze(1)
+        # 取出全局token，然后和其他变量进行交叉注意力
+        x_glb_ori = x[:, -1, :].unsqueeze(1) # [B, 1, D]
         x_glb = torch.reshape(x_glb_ori, (B, -1, D))
         x_glb_attn = self.dropout(self.cross_attention(
             x_glb, cross, cross,
             attn_mask=cross_mask,
             tau=tau, delta=delta
         )[0])
-        x_glb_attn = torch.reshape(x_glb_attn,
-                                   (x_glb_attn.shape[0] * x_glb_attn.shape[1], x_glb_attn.shape[2])).unsqueeze(1)
-        x_glb = x_glb_ori + x_glb_attn
-        x_glb = self.norm2(x_glb)
+        x_glb_attn = torch.reshape(x_glb_attn, 
+            (x_glb_attn.shape[0] * x_glb_attn.shape[1], x_glb_attn.shape[2])).unsqueeze(1)
+        x_glb = x_glb_ori + x_glb_attn # 残差连接
+        x_glb = self.norm2(x_glb) # 层归一化
 
-        y = x = torch.cat([x[:, :-1, :], x_glb], dim=1)
+        # 将处理后的全局token重新拼接到序列中
+        y = x = torch.cat([x[:, :-1, :], x_glb], dim=1) 
 
+        # 前馈网络部分
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
 
-        return self.norm3(x + y)
+        return self.norm3(x + y) # 最后的残差连接和层归一化
 
 
 class Model(nn.Module):
@@ -162,7 +168,7 @@ class Model(nn.Module):
             stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
             x_enc /= stdev
 
-        _, _, N = x_enc.shape
+        _, _, N = x_enc.shape # [B, N, L]
 
         en_embed, n_vars = self.en_embedding(x_enc[:, :, -1].unsqueeze(-1).permute(0, 2, 1))
         ex_embed = self.ex_embedding(x_enc[:, :, :-1], x_mark_enc)
